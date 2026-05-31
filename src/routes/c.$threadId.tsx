@@ -1,8 +1,8 @@
 import { useChat } from "@ai-sdk/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { Activity, ArrowRight, Microscope, MessageSquare, PanelRight } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Activity, ArrowRight, Microscope, MessageSquare, Paperclip, PanelRight, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
 
@@ -24,6 +24,7 @@ import { RequirementsPanel } from "@/components/requirements-panel";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import {
+  addResearchFile,
   createBlankThread,
   getThread,
   mergeRequirements,
@@ -31,7 +32,7 @@ import {
   updateThread,
   upsertThread,
 } from "@/lib/storage";
-import type { ComputationPlan, RequirementItem, Thread } from "@/lib/types";
+import type { ComputationPlan, RequirementItem, ResearchFileMeta, Thread } from "@/lib/types";
 
 export const Route = createFileRoute("/c/$threadId")({
   head: () => ({
@@ -151,6 +152,8 @@ function ChatThreadView({
   const [plan, setPlan] = useState<ComputationPlan | null>(initial.plan);
   const [input, setInput] = useState("");
   const [jobSubmitted, setJobSubmitted] = useState<{ planTitle: string } | null>(null);
+  const [attachedFile, setAttachedFile] = useState<{ name: string; summary: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const transport = useMemo(
     () => new DefaultChatTransport({ api: "/api/chat" }),
@@ -238,11 +241,80 @@ function ChatThreadView({
     el?.focus();
   }, [threadId, status]);
 
+  const handleAttachFile = async (file: File) => {
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const FORMAT_MAP: Record<string, string> = {
+      pdb: "PDB", ent: "PDB", fasta: "FASTA", fa: "FASTA", fas: "FASTA",
+      sdf: "SDF", mol: "SDF", mol2: "MOL2", cif: "CIF", xyz: "XYZ",
+      csv: "CSV", json: "JSON", txt: "TXT",
+    };
+    const format = FORMAT_MAP[ext] ?? "OTHER";
+
+    // Parse metadata for PDB/FASTA
+    let meta: ResearchFileMeta = {};
+    try {
+      const text = await file.text();
+      if (format === "PDB") {
+        const lines = text.split("\n");
+        let moleculeName = "";
+        const chains = new Set<string>();
+        let atomCount = 0;
+        for (const line of lines) {
+          if (!moleculeName && (line.startsWith("HEADER") || line.startsWith("TITLE ")))
+            moleculeName = line.slice(10).trim().replace(/\s+/g, " ").slice(0, 80);
+          if (line.startsWith("ATOM  ") || line.startsWith("HETATM")) {
+            atomCount++;
+            const chain = line[21];
+            if (chain && chain !== " ") chains.add(chain);
+          }
+        }
+        meta = { moleculeName: moleculeName || undefined, atomOrResidueCount: atomCount || undefined, chains: chains.size ? [...chains].sort() : undefined };
+      } else if (format === "FASTA") {
+        const lines = text.split("\n");
+        let seqCount = 0, firstHeader = "", totalRes = 0;
+        for (const line of lines) {
+          const t = line.trim();
+          if (t.startsWith(">")) { seqCount++; if (!firstHeader) firstHeader = t.slice(1).trim().split(/\s+/)[0] ?? ""; }
+          else totalRes += t.replace(/[^A-Za-z]/g, "").length;
+        }
+        meta = { moleculeName: firstHeader || undefined, sequenceCount: seqCount || undefined, atomOrResidueCount: totalRes || undefined };
+      }
+    } catch { /* ignore */ }
+
+    // Save to research file library
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    addResearchFile({
+      id: `rf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      name: file.name, format, mime: file.type || "application/octet-stream",
+      dataUrl, size: file.size, uploadedAt: Date.now(),
+      description: "从对话中上传", tags: [], meta,
+    });
+
+    // Build human-readable summary for the chat message
+    const parts: string[] = [`格式：${format}`];
+    if (meta.moleculeName) parts.push(`分子：${meta.moleculeName}`);
+    if (meta.chains?.length) parts.push(`链：${meta.chains.join(", ")}`);
+    if (meta.atomOrResidueCount) parts.push(format === "FASTA" ? `${meta.atomOrResidueCount} 残基` : `${meta.atomOrResidueCount} 原子`);
+    if (meta.sequenceCount) parts.push(`${meta.sequenceCount} 条序列`);
+
+    setAttachedFile({ name: file.name, summary: parts.join(" · ") });
+    toast.success(`已附加 ${file.name}，已同步到研究文件库`);
+  };
+
   const handleSubmit = async () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text && !attachedFile) return;
+    const fullText = attachedFile
+      ? `[已上传文件：${attachedFile.name}（${attachedFile.summary}）]${text ? "\n" + text : ""}`
+      : text;
     setInput("");
-    await sendMessage({ text });
+    setAttachedFile(null);
+    await sendMessage({ text: fullText });
   };
 
   const handleConfirmPlan = () => {
@@ -330,6 +402,17 @@ function ChatThreadView({
                 handleSubmit();
               }}
             >
+              {/* Attached file preview */}
+              {attachedFile && (
+                <div className="flex items-center gap-1.5 border-b border-border/50 px-3 py-2">
+                  <Paperclip className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-foreground font-medium">{attachedFile.name}</span>
+                  <span className="shrink-0 text-[10px] text-muted-foreground">{attachedFile.summary}</span>
+                  <button onClick={() => setAttachedFile(null)} className="ml-1 rounded p-0.5 text-muted-foreground hover:text-foreground">
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
               <PromptInputTextarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -362,8 +445,29 @@ function ChatThreadView({
                     <div className="flex flex-col gap-3">{sidePanel}</div>
                   </SheetContent>
                 </Sheet>
-                <span className="hidden lg:block" />
-                <PromptInputSubmit status={status} disabled={!input.trim() || isLoading} />
+                {/* File attachment button */}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isLoading}
+                  title="上传 PDB / FASTA / SDF 等研究文件"
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                >
+                  <Paperclip className="h-4 w-4" />
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdb,.ent,.fasta,.fa,.fas,.sdf,.mol,.mol2,.cif,.xyz,.csv,.json,.txt"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleAttachFile(f);
+                    e.target.value = "";
+                  }}
+                />
+                <span className="flex-1" />
+                <PromptInputSubmit status={status} disabled={(!input.trim() && !attachedFile) || isLoading} />
               </PromptInputFooter>
             </PromptInput>
           </div>
