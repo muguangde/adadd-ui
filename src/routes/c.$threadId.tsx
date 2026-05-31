@@ -1,7 +1,7 @@
 import { useChat } from "@ai-sdk/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { Microscope, PanelRight } from "lucide-react";
+import { Activity, ArrowRight, Microscope, MessageSquare, PanelRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
@@ -150,6 +150,7 @@ function ChatThreadView({
   const [requirements, setRequirements] = useState<RequirementItem[]>(initial.requirements);
   const [plan, setPlan] = useState<ComputationPlan | null>(initial.plan);
   const [input, setInput] = useState("");
+  const [jobSubmitted, setJobSubmitted] = useState<{ planTitle: string } | null>(null);
 
   const transport = useMemo(
     () => new DefaultChatTransport({ api: "/api/chat" }),
@@ -250,8 +251,8 @@ function ChatThreadView({
     const method = requirements.find((r) => /方法|method/i.test(r.key))?.value ?? plan.tools[0] ?? "—";
     void runJobOnServer(threadId, plan, target, method);
     setConfirmedPlanId(plan.id);
-    toast.success("任务已提交至计算流水线，正在前往任务监控…");
-    setTimeout(onGoJobs, 800);
+    setJobSubmitted({ planTitle: plan.title });
+    toast.success("计算任务已提交至流水线");
   };
 
   const handleEditPlan = () => {
@@ -294,6 +295,17 @@ function ChatThreadView({
                 </MessageContent>
               </Message>
             ))}
+            {jobSubmitted && (
+              <Message from="assistant">
+                <MessageContent>
+                  <AgentNavPrompt
+                    planTitle={jobSubmitted.planTitle}
+                    onGoJobs={() => { setJobSubmitted(null); onGoJobs(); }}
+                    onStay={() => setJobSubmitted(null)}
+                  />
+                </MessageContent>
+              </Message>
+            )}
             {status === "submitted" && (
               <Message from="assistant">
                 <MessageContent>
@@ -504,6 +516,53 @@ function renderMessageParts(parts: MessagePart[] = []) {
         return null;
       })}
     </>
+  );
+}
+
+// ── Agent-driven navigation prompt ───────────────────────────────────────────
+
+function AgentNavPrompt({
+  planTitle,
+  onGoJobs,
+  onStay,
+}: {
+  planTitle: string;
+  onGoJobs: () => void;
+  onStay: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <p className="text-sm leading-relaxed">
+        计算任务
+        <span className="mx-1 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-primary">
+          {planTitle}
+        </span>
+        已提交至流水线，正在排队运行。
+      </p>
+      <p className="text-sm text-muted-foreground">
+        是否切换到任务监控页面实时查看进度？您也可以继续在这里提问——比如调整方案、询问工具原理，或开始下一个研究任务。
+      </p>
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Button
+          size="sm"
+          className="gap-1.5"
+          onClick={onGoJobs}
+        >
+          <Activity className="h-3.5 w-3.5" />
+          前往任务监控
+          <ArrowRight className="h-3 w-3" />
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={onStay}
+        >
+          <MessageSquare className="h-3.5 w-3.5" />
+          继续对话
+        </Button>
+      </div>
+    </div>
   );
 }
 
