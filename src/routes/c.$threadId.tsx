@@ -1,7 +1,7 @@
 import { useChat } from "@ai-sdk/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { DefaultChatTransport, type UIMessage } from "ai";
-import { Activity, ArrowRight, Microscope, MessageSquare, Paperclip, PanelRight, X } from "lucide-react";
+import { Activity, ArrowRight, CheckCircle2, Microscope, MessageSquare, Paperclip, PanelRight, X, XCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import { toast } from "sonner";
@@ -27,12 +27,13 @@ import {
   addResearchFile,
   createBlankThread,
   getThread,
+  loadJobs,
   mergeRequirements,
   runJobOnServer,
   updateThread,
   upsertThread,
 } from "@/lib/storage";
-import type { ComputationPlan, RequirementItem, ResearchFileMeta, Thread } from "@/lib/types";
+import type { ComputationPlan, Job, RequirementItem, ResearchFileMeta, Thread } from "@/lib/types";
 
 export const Route = createFileRoute("/c/$threadId")({
   head: () => ({
@@ -153,7 +154,9 @@ function ChatThreadView({
   const [input, setInput] = useState("");
   const [jobSubmitted, setJobSubmitted] = useState<{ planTitle: string } | null>(null);
   const [attachedFile, setAttachedFile] = useState<{ name: string; summary: string } | null>(null);
+  const [jobCompleted, setJobCompleted] = useState<{ planTitle: string; status: "completed" | "failed"; artifactCount: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const prevJobStatusRef = useRef<Record<string, Job["status"]>>({});
 
   const transport = useMemo(
     () => new DefaultChatTransport({ api: "/api/chat" }),
@@ -233,6 +236,40 @@ function ChatThreadView({
     window.dispatchEvent(new CustomEvent("adadd:threads-updated"));
   }, [messages, requirements, plan, threadId, initial.title]);
 
+  // Monitor job completion for this thread while user stays on chat page
+  useEffect(() => {
+    const check = () => {
+      const jobs = loadJobs().filter((j) => j.threadId === threadId);
+      for (const job of jobs) {
+        const prev = prevJobStatusRef.current[job.id];
+        if (prev && prev !== job.status && (job.status === "completed" || job.status === "failed")) {
+          setJobCompleted({
+            planTitle: job.name,
+            status: job.status,
+            artifactCount: job.artifacts.length,
+          });
+          if (job.status === "completed") {
+            toast.success(`计算任务「${job.name}」已完成`, { duration: 4000 });
+          } else {
+            toast.error(`计算任务「${job.name}」运行失败`);
+          }
+        }
+        prevJobStatusRef.current[job.id] = job.status;
+      }
+    };
+    // Seed initial statuses without triggering notifications
+    const seed = () => {
+      for (const job of loadJobs().filter((j) => j.threadId === threadId)) {
+        if (!(job.id in prevJobStatusRef.current)) {
+          prevJobStatusRef.current[job.id] = job.status;
+        }
+      }
+    };
+    seed();
+    window.addEventListener("adadd:jobs-updated", check);
+    return () => window.removeEventListener("adadd:jobs-updated", check);
+  }, [threadId]);
+
   // Focus textarea after status changes / thread switch
   useEffect(() => {
     const el = document.querySelector<HTMLTextAreaElement>(
@@ -279,7 +316,9 @@ function ChatThreadView({
         }
         meta = { moleculeName: firstHeader || undefined, sequenceCount: seqCount || undefined, atomOrResidueCount: totalRes || undefined };
       }
-    } catch { /* ignore */ }
+    } catch {
+      toast.warning(`${file.name} 元数据解析失败，文件仍已附加`);
+    }
 
     // Save to research file library
     const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -314,6 +353,8 @@ function ChatThreadView({
       : text;
     setInput("");
     setAttachedFile(null);
+    setJobSubmitted(null);   // dismiss nav prompt when user continues conversation
+    setJobCompleted(null);   // dismiss completion prompt when user continues conversation
     await sendMessage({ text: fullText });
   };
 
@@ -358,7 +399,7 @@ function ChatThreadView({
         <Conversation className="min-h-0 flex-1">
           <ConversationContent className="mx-auto w-full max-w-3xl">
             {messages.length === 0 && (
-              <EmptyState />
+              <EmptyState onSelectTask={(task) => setInput(task)} />
             )}
             {messages.map((m) => (
               <Message key={m.id} from={m.role}>
@@ -374,6 +415,19 @@ function ChatThreadView({
                     planTitle={jobSubmitted.planTitle}
                     onGoJobs={() => { setJobSubmitted(null); onGoJobs(); }}
                     onStay={() => setJobSubmitted(null)}
+                  />
+                </MessageContent>
+              </Message>
+            )}
+            {jobCompleted && (
+              <Message from="assistant">
+                <MessageContent>
+                  <JobCompletedPrompt
+                    planTitle={jobCompleted.planTitle}
+                    status={jobCompleted.status}
+                    artifactCount={jobCompleted.artifactCount}
+                    onGoJobs={() => { setJobCompleted(null); onGoJobs(); }}
+                    onStay={() => setJobCompleted(null)}
                   />
                 </MessageContent>
               </Message>
@@ -491,7 +545,7 @@ const EXAMPLE_TASKS = [
   "从 wt_vh.fasta 出发，IgLM 生成 100 个多样性候选，FoldX 打分筛选 Top-10",
 ];
 
-function EmptyState() {
+function EmptyState({ onSelectTask }: { onSelectTask: (task: string) => void }) {
   return (
     <div className="mx-auto flex max-w-lg flex-col items-center pt-12 text-center">
       <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-primary/15 text-primary">
@@ -531,20 +585,7 @@ function EmptyState() {
             key={task}
             type="button"
             className="w-full rounded-md border border-border bg-card/40 px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-foreground"
-            onClick={() => {
-              const ta = document.querySelector<HTMLTextAreaElement>(
-                'textarea[name="message"]',
-              );
-              if (ta) {
-                const nativeInput = Object.getOwnPropertyDescriptor(
-                  window.HTMLTextAreaElement.prototype,
-                  "value",
-                )?.set;
-                nativeInput?.call(ta, task);
-                ta.dispatchEvent(new Event("input", { bubbles: true }));
-                ta.focus();
-              }
-            }}
+            onClick={() => onSelectTask(task)}
           >
             {task}
           </button>
@@ -662,6 +703,57 @@ function AgentNavPrompt({
           className="gap-1.5"
           onClick={onStay}
         >
+          <MessageSquare className="h-3.5 w-3.5" />
+          继续对话
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function JobCompletedPrompt({
+  planTitle,
+  status,
+  artifactCount,
+  onGoJobs,
+  onStay,
+}: {
+  planTitle: string;
+  status: "completed" | "failed";
+  artifactCount: number;
+  onGoJobs: () => void;
+  onStay: () => void;
+}) {
+  const isOk = status === "completed";
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-2">
+        {isOk
+          ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+          : <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />}
+        <p className="text-sm leading-relaxed">
+          计算任务
+          <span className="mx-1 rounded bg-primary/15 px-1.5 py-0.5 font-medium text-primary">
+            {planTitle}
+          </span>
+          {isOk
+            ? <>已完成！{artifactCount > 0 && <span className="text-muted-foreground">共生成 {artifactCount} 个产物文件。</span>}</>
+            : "运行失败，可前往任务监控查看错误详情。"
+          }
+        </p>
+      </div>
+      {isOk && (
+        <p className="text-sm text-muted-foreground">
+          您可以前往任务监控下载结果，或继续在这里分析数据、开始下一步实验设计。
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2 pt-1">
+        <Button size="sm" className={`gap-1.5 ${isOk ? "" : "bg-destructive hover:bg-destructive/90"}`} onClick={onGoJobs}>
+          <Activity className="h-3.5 w-3.5" />
+          {isOk ? "查看结果" : "查看错误"}
+          <ArrowRight className="h-3 w-3" />
+        </Button>
+        <Button size="sm" variant="outline" className="gap-1.5" onClick={onStay}>
           <MessageSquare className="h-3.5 w-3.5" />
           继续对话
         </Button>
