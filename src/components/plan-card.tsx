@@ -35,7 +35,8 @@ export function PlanCard({
   confirmed: boolean;
 }) {
   const total = plan.steps.reduce((s, x) => s + x.estimated_minutes, 0);
-  const conf = confidenceMap[plan.confidence];
+  // Fallback to "medium" if LLM outputs a non-canonical confidence value
+  const conf = confidenceMap[plan.confidence] ?? confidenceMap["medium"];
   const activeStages = deriveActiveStages(plan);
 
   return (

@@ -21,9 +21,13 @@ const BASE_SYSTEM_PROMPT = `你是 ADADD 平台的抗体科研助手。
 <ACTION>{"type":"update_requirements","items":[{"key":"靶蛋白","value":"HER2"}]}</ACTION>
 
 提出方案时输出：
-<ACTION>{"type":"propose_plan","title":"方案名称","tools":["IgFold","FoldX"],"steps":[{"name":"结构预测","tool":"IgFold","estimated_minutes":10,"inputs":"VH序列","outputs":"PDB文件"},{"name":"亲和力打分","tool":"FoldX","estimated_minutes":5,"inputs":"PDB文件","outputs":"ΔΔG"}],"confidence":"high","reasoning":"方案理由2-3句"}</ACTION>
+<ACTION>{"type":"propose_plan","title":"方案名称","tools":["IgFold","FoldX"],"steps":[{"name":"结构预测","tool":"IgFold","estimated_minutes":10,"inputs":"VH序列","outputs":"PDB文件"},{"name":"亲和力打分","tool":"FoldX","estimated_minutes":5,"inputs":"PDB文件","outputs":"ΔΔG"}],"confidence":"high","reasoning":"一句话说明方案理由"}</ACTION>
 
-**重要：<ACTION> 块必须是合法 JSON，不要换行，不要在 JSON 内部有未转义引号。**
+**重要：**
+**① <ACTION> 块必须是单行合法 JSON，整个块从 { 到 } 不得出现真实换行符。**
+**② 字符串值内如需换行请用 \\n，绝不能用真实回车。**
+**③ confidence 只能是 "low"、"medium"、"high" 三选一，不得用其他词。**
+**④ reasoning 只写一句话，不要写多句。**
 
 ## ADADD 可用工具
 - 结构预测：IgFold、Chai-1、ABodyBuilder3

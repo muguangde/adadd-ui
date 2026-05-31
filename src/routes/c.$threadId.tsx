@@ -67,7 +67,10 @@ function parseActionBlocks(text: string): Action[] {
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
     try {
-      const parsed = JSON.parse(match[1].trim()) as Action;
+      // Small LLMs often emit real newlines inside JSON string values (invalid per spec).
+      // Replace bare newlines so JSON.parse succeeds; the visible text is stripped anyway.
+      const sanitized = match[1].trim().replace(/\n/g, "\\n").replace(/\r/g, "");
+      const parsed = JSON.parse(sanitized) as Action;
       if (parsed?.type) actions.push(parsed);
     } catch {
       // malformed JSON — skip
@@ -103,6 +106,11 @@ function ChatThreadPage() {
   const [thread, setThread] = useState<Thread | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [confirmedPlanId, setConfirmedPlanId] = useState<string | null>(null);
+
+  // Reset confirmed state when thread changes so stale IDs don't match new plans
+  useEffect(() => {
+    setConfirmedPlanId(null);
+  }, [threadId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
